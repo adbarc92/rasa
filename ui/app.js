@@ -277,6 +277,11 @@ function boxEl(cls, p, rect, onClick, title) {
   return el;
 }
 
+// Matches the person clicked to keep. The check allows these on the page, nowhere else.
+function skippedMatches(f) {
+  return [...f.hits.values()].filter((h) => !h.enabled).map((h) => ({ page: h.page, term: h.term }));
+}
+
 function pendingRedactions(f) {
   const out = [];
   for (const h of f.hits.values()) if (h.enabled) out.push({ page: h.page, rect: h.rect });
@@ -366,12 +371,12 @@ $("save").onclick = async () => {
   if (!out) return;
   busy(true, "Saving…");
   try {
-    const r = await engine("apply", { out_path: out, redactions: pendingRedactions(f), terms: state.terms, path: f.path });
+    const r = await engine("apply", { out_path: out, redactions: pendingRedactions(f), terms: state.terms, path: f.path, skipped: skippedMatches(f) });
     const j = judge(r);
     const missed = missedTerms();
     showModal(j.level === "bad" ? "Saved, but something remains" : j.level === "check" ? "Saved, check it by eye" : "Redacted copy saved",
       `<p class="${j.level === "ok" ? "ok" : "bad"}"><b>${esc(j.label)}.</b></p>${j.detail}
-       <p>${plural(r.count, "area")} permanently removed. The saved copy was re-opened and checked for your search terms in its text, raw file data, metadata, bookmarks, links, comments, form fields and attachments.</p>
+       <p>${plural(r.count, "area")} permanently removed${r.skipped ? `, ${plural(r.skipped, "skipped match", "skipped matches")} left in place as you chose` : ""}. The saved copy was re-opened and checked for your search terms in its text, raw file data, metadata, bookmarks, links, comments, form fields and attachments.</p>
        ${missed.length ? `<p class="bad">Never found, so nothing was removed for them: ${missed.map(esc).join(", ")}.</p>` : ""}
        <p class="muted">${esc(r.out_path)}</p><p class="muted">Black boxes still show how long the removed text was. Read the copy once before sending it.</p>`,
       [{ label: "Keep editing original" }, { label: "View redacted copy", primary: true, run: () => openFiles([r.out_path], null) }]);
@@ -392,7 +397,7 @@ async function saveAll() {
       busy(true, `Saving ${i + 1} of ${todo.length}…`);
       try {
         const { out_path } = await engine("out_path", { path: f.path, folder: state.folder, out_dir: outDir });
-        const r = await engine("apply", { out_path, redactions: pendingRedactions(f), terms: state.terms, path: f.path });
+        const r = await engine("apply", { out_path, redactions: pendingRedactions(f), terms: state.terms, path: f.path, skipped: skippedMatches(f) });
         rows.push({ f, r, j: judge(r) });
       } catch (e) {
         rows.push({ f, j: { level: "bad", label: `Failed: ${e}`, detail: "" } });

@@ -14,6 +14,7 @@ re-opened and checked.
 from __future__ import annotations
 
 import base64
+import collections
 import json
 import os
 import re
@@ -251,6 +252,20 @@ def redact(doc: pymupdf.Document, redactions: list[dict]) -> None:
         thumbnails=True,
         xml_metadata=True,
     )
+    # Accessibility tags (the structure tree) can hold alt text and ActualText, and
+    # they keep references to removed links alive, so garbage collection would
+    # leave every mailto: address in the file. Drop the tags and anything else in
+    # the catalog that can carry text or point at removed objects.
+    cat = doc.pdf_catalog()
+    for key in ("StructTreeRoot", "MarkInfo", "AcroForm", "OpenAction", "AA", "Names", "Dests"):
+        doc.xref_set_key(cat, key, "null")
+    for page in doc:
+        for link in page.get_links():
+            page.delete_link(link)
+        for key in ("StructParents", "AA"):
+            doc.xref_set_key(page.xref, key, "null")
+        if page.first_annot is None and page.first_widget is None:
+            doc.xref_set_key(page.xref, "Annots", "null")
     doc.set_toc([])
     doc.set_metadata({})
     for page in doc:  # anything bake() left behind
@@ -271,17 +286,48 @@ def save(doc: pymupdf.Document, out_path: str) -> None:
     )
 
 
-def verify(out_path: str, terms: list[str], regions: list[dict]) -> dict:
+def _object_kind(doc: pymupdf.Document, xref: int) -> str:
+    """Plain-language name for where in the file a leftover was found."""
+    try:
+        obj = doc.xref_object(xref, compressed=False)
+    except Exception:
+        return "unknown object"
+    if xref in {x for p in doc for x in p.get_contents()}:
+        return "page content"
+    for marker, name in (("/URI", "a link address"), ("/StructElem", "accessibility tags"), ("/ActualText", "accessibility tags"),
+                         ("/Alt", "accessibility tags"), ("/Annot", "an annotation"), ("/Image", "image data"),
+                         ("/FontFile", "font data"), ("/Font", "font data"), ("/Metadata", "metadata"), ("/XObject", "a page element")):
+        if marker in obj:
+            return name
+    return "data stream" if doc.xref_is_stream(xref) else "data record"
+
+
+def _is_font_program(obj: str) -> bool:
+    return bool(re.search(r"/Length[123]\b|/Subtype\s*/(Type1C|CIDFontType0C|OpenType)\b", obj))
+
+
+def verify(out_path: str, terms: list[str], regions: list[dict], skipped: list[dict] | None = None) -> dict:
     """Re-open the saved file and look for anything that should be gone."""
     findings: list[str] = []
     doc = pymupdf.open(out_path)
     terms = [t for t in (re.sub(r"\s+", " ", t).strip() for t in terms) if t]
+    # Matches the person chose to keep (clicked to skip). Those may stay on the
+    # page; the same term anywhere else in the file is still a finding.
+    allowed: collections.Counter = collections.Counter()
+    for s in skipped or []:
+        allowed[(int(s["page"]), _norm(s["term"]))] += 1
+    kept_terms = {term for _, term in allowed}
 
     # 1. Extractable text, page by page (normal, whitespace-insensitive, and the search engine itself).
     for page in doc:
         text = page.get_text("text")
         for t in terms:
-            if _norm(t) in _norm(text) or _squash(t) in _squash(text) or page.search_for(t):
+            keep = allowed[(page.number, _norm(t))]
+            if keep:
+                leaked = len(page.search_for(t)) > keep
+            else:
+                leaked = _norm(t) in _norm(text) or _squash(t) in _squash(text) or bool(page.search_for(t))
+            if leaked:
                 findings.append(f'"{t}" is still readable on page {page.number + 1}.')
 
     # 2. Nothing left inside any redacted area.
@@ -301,32 +347,47 @@ def verify(out_path: str, terms: list[str], regions: list[dict]) -> dict:
             findings.append(f'Text "{"".join(left)}" remains under a redaction on page {page.number + 1}.')
 
     # 3. Raw bytes of every object and decompressed stream.
-    needles = set()
-    for t in terms:
-        for variant in {t, _squash(t)}:
-            for enc in ("latin-1", "utf-8", "utf-16-be"):
-                try:
-                    needles.add(variant.casefold().encode(enc))
-                except UnicodeEncodeError:
-                    pass
-    needles.discard(b"")
+    #    Font programs are skipped: they hold glyph outlines and the font maker's
+    #    own name/copyright strings, never document text, and short terms turn up
+    #    in them by coincidence. Page drawing streams are skipped only for terms
+    #    with kept matches, because those words are meant to still be there.
+    def needles_for(ts):
+        out = set()
+        for t in ts:
+            for variant in {t, _squash(t)}:
+                for enc in ("latin-1", "utf-8", "utf-16-be"):
+                    try:
+                        out.add(variant.casefold().encode(enc))
+                    except UnicodeEncodeError:
+                        pass
+        out.discard(b"")
+        return out
+
+    all_needles = needles_for(terms)
+    strict_needles = needles_for([t for t in terms if _norm(t) not in kept_terms])
+    drawing = {x for p in doc for x in p.get_contents()}
     for xref in range(1, doc.xref_length()):
-        blobs = []
         try:
-            blobs.append(doc.xref_object(xref, compressed=False).encode("latin-1", "replace"))
+            obj = doc.xref_object(xref, compressed=False)
         except Exception:
-            pass
-        try:
-            if doc.xref_is_stream(xref):
+            continue
+        is_stream = doc.xref_is_stream(xref)
+        if is_stream and _is_font_program(obj):
+            continue
+        if xref in drawing or (is_stream and "/Form" in obj):
+            drawing.add(xref)
+        blobs = [obj.encode("latin-1", "replace")]
+        if is_stream:
+            try:
                 blobs.append(doc.xref_stream(xref) or b"")
-        except Exception:
-            pass
+            except Exception:
+                pass
+        needles = strict_needles if xref in drawing else all_needles
         for blob in blobs:
             low = blob.lower()
-            for n in needles:
-                if n in low:
-                    findings.append(f"A searched term appears in the raw bytes of PDF object {xref}.")
-                    break
+            if any(n in low for n in needles):
+                findings.append(f"A searched term is hidden in the file's raw data ({_object_kind(doc, xref)}, object {xref}).")
+                break
 
     # 4. Places outside the page that must be empty.
     if any(v for k, v in doc.metadata.items() if v and k not in ("format", "encryption")):
@@ -353,7 +414,7 @@ def verify(out_path: str, terms: list[str], regions: list[dict]) -> dict:
         ocr_checked.append(page.number + 1)
         lines = ocr_lines(page)
         for t in terms:
-            if ocr_find(lines, t):
+            if len(ocr_find(lines, t)) > allowed[(page.number, _norm(t))]:
                 findings.append(f'"{t}" can still be read (by text recognition) on page {page.number + 1}.')
 
     doc.close()
@@ -451,7 +512,8 @@ class Session:
     def cmd_search(self, terms: list[str], path: str | None = None) -> dict:
         return {"hits": search(self._need(path), terms, self._ocr_pages(path))}
 
-    def cmd_apply(self, out_path: str, redactions: list[dict], terms: list[str], path: str | None = None) -> dict:
+    def cmd_apply(self, out_path: str, redactions: list[dict], terms: list[str], path: str | None = None,
+                  skipped: list[dict] | None = None) -> dict:
         src = path or self.path
         self._need(src)
         if os.path.abspath(out_path).casefold() == os.path.abspath(src).casefold():
@@ -463,7 +525,8 @@ class Session:
             save(doc, out_path)
         finally:
             doc.close()
-        report = verify(out_path, terms, redactions)
+        report = verify(out_path, terms, redactions, skipped)
+        report["skipped"] = len(skipped or [])
         report["out_path"] = out_path
         report["count"] = len(redactions)
         return report

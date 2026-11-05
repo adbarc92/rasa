@@ -309,6 +309,70 @@ def test_folder_mode_lists_searches_and_saves_each_file(tmp_path):
         s.cmd_search([SECRET])
 
 
+def test_link_kept_alive_by_accessibility_tags_is_removed(tmp_path):
+    # Chrome's "Save as PDF" tags every link in the structure tree. Removing the
+    # link from the page left the annotation (and its mailto: address) in the file.
+    src = tmp_path / "tagged.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Write to me anytime.", fontsize=11)
+    page.insert_link({"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(72, 90, 200, 105),
+                      "uri": "mailto:jonathan.testperson@example.com"})
+    doc.save(src)
+    doc = pymupdf.open(src)
+    annot = doc[0].get_links()[0]["xref"]
+    tree, elem = doc.get_new_xref(), doc.get_new_xref()
+    doc.update_object(elem, f"<< /Type /StructElem /S /Link /P {tree} 0 R /Alt (Email Jonathan Testperson) "
+                            f"/K << /Type /OBJR /Obj {annot} 0 R >> >>")
+    doc.update_object(tree, f"<< /Type /StructTreeRoot /K [{elem} 0 R] >>")
+    doc.xref_set_key(doc.pdf_catalog(), "StructTreeRoot", f"{tree} 0 R")
+    doc.xref_set_key(doc.pdf_catalog(), "MarkInfo", "<< /Marked true >>")
+    doc.save(tmp_path / "tagged2.pdf")
+
+    out = tmp_path / "out.pdf"
+    _, report = run_apply(tmp_path / "tagged2.pdf", out, ["Testperson"])
+    assert report["ok"], report["findings"]
+    assert b"testperson" not in all_raw_bytes(out)
+    assert "Write to me anytime." in pymupdf.open(out)[0].get_text()
+
+
+def test_verify_names_where_a_leftover_hides(tmp_path):
+    src = tmp_path / "linked.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_link({"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(72, 90, 200, 105),
+                      "uri": "mailto:jonathan.testperson@example.com"})
+    doc.save(src)
+    findings = eng.verify(str(src), ["Testperson"], [])["findings"]
+    assert any("a link address" in f for f in findings), findings
+
+
+def test_skipped_matches_are_not_failures_but_hidden_copies_are(tmp_path):
+    src = tmp_path / "will.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Will Testperson signs this Last Will and Testament.", fontsize=11)
+    page.insert_link({"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(72, 90, 120, 105), "uri": "https://example.com/will"})
+    doc.save(src)
+    s = eng.Session()
+    s.cmd_open(str(src))
+    hits = s.cmd_search(["Will"])["hits"]
+    assert len(hits) == 2
+    first, second = sorted(hits, key=lambda h: h["rect"][0])
+    out = tmp_path / "out.pdf"
+    report = s.cmd_apply(str(out), [first], ["Will"], skipped=[{"page": 0, "term": "Will"}])
+    assert report["ok"], report["findings"]  # "Last Will" was kept on purpose; the link was removed
+    assert "Last Will and Testament" in pymupdf.open(out)[0].get_text()
+    # Without declaring the skip, the kept word is reported.
+    assert not eng.verify(str(out), ["Will"], [])["ok"]
+    # A kept term hidden outside the page is still caught.
+    leaky = pymupdf.open(out)
+    leaky.set_metadata({"title": "Will"})
+    leaky.save(tmp_path / "leaky.pdf")
+    r = eng.verify(str(tmp_path / "leaky.pdf"), ["Will"], [], [{"page": 0, "term": "Will"}])
+    assert not r["ok"]
+
+
 def test_term_set_round_trip(tmp_path):
     s = eng.Session()
     p = tmp_path / "family.txt"
