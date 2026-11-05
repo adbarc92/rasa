@@ -37,10 +37,17 @@ function showModal(title, html, actions = [{ label: "Close" }]) {
   $("modal").hidden = false;
 }
 
-function blindText(pages, total) {
-  const which = pages.length === total ? "This file has"
+function pagesPhrase(pages, total) {
+  return pages.length === total ? "This file has"
     : pages.length === 1 ? `Page ${pages[0]} has` : `Pages ${pages.join(", ")} have`;
-  return `${which} no searchable text. Search will find nothing there, so cover names with manual boxes.`;
+}
+
+function blindText(pages, total) {
+  return `${pagesPhrase(pages, total)} no searchable text. Search will find nothing there, so cover names with manual boxes.`;
+}
+
+function ocrText(pages, total) {
+  return `${pagesPhrase(pages, total)} no text layer, so rasa reads ${pages.length === 1 ? "it" : "them"} with Windows text recognition. It can misread letters: look over ${pages.length === 1 ? "that page" : "those pages"} and box anything search missed.`;
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -68,8 +75,9 @@ async function openPdf(path) {
     });
     state.unreadable = info.unreadable_pages || [];
     $("blind").hidden = !state.unreadable.length;
-    $("blind").textContent = blindText(state.unreadable, info.pages.length);
-    if (state.unreadable.length) showModal("Search can't see this file", `<p class="bad">${esc(blindText(state.unreadable, info.pages.length))}</p><p>This happens with "Microsoft Print to PDF" and with scans: letters are stored as shapes or pictures, not text. Manual boxes still delete them permanently.</p><p>For emails, print again and choose <b>Save as PDF</b> (Chrome or Edge) instead of Microsoft Print to PDF. That keeps the text, and search will work.</p>`);
+    const note = (info.ocr_available ? ocrText : blindText)(state.unreadable, info.pages.length);
+    $("blind").textContent = note;
+    if (state.unreadable.length) showModal(info.ocr_available ? "Using text recognition" : "Search can't see this file", `<p class="bad">${esc(note)}</p><p>This happens with "Microsoft Print to PDF" and with scans: letters are stored as shapes or pictures, not text. Manual boxes still delete them permanently.</p><p>For emails, print again and choose <b>Save as PDF</b> (Chrome or Edge) instead of Microsoft Print to PDF. That keeps the text, so search is exact.</p>`);
     refresh();
     for (let i = 0; i < info.pages.length; i++) {
       const { png } = await engine("render", { page: i });
@@ -239,11 +247,14 @@ $("save").onclick = async () => {
     const r = await engine("apply", { out_path: out, redactions, terms });
     const missed = state.terms.filter((t) => !t.hitIds.length).map((t) => t.text);
     const blind = r.unreadable_pages || [];
-    const blindNote = blind.length
+    const ocrd = r.ocr_pages || [];
+    const blindNote = (blind.length
       ? `<p class="bad"><b>Not fully checked.</b> ${esc(blindText(blind, state.pages.length))} rasa cannot read those pages, so it cannot confirm your terms are gone from them. Check them by eye.</p>`
-      : "";
-    const body = r.ok && blind.length
-      ? `<p>${r.count} area${r.count === 1 ? "" : "s"} permanently removed. Metadata, bookmarks, links, comments, form fields and attachments were stripped.</p>${blindNote}`
+      : "") + (ocrd.length && r.ok
+      ? `<p>Page${ocrd.length > 1 ? "s" : ""} ${ocrd.join(", ")} ${ocrd.length > 1 ? "were" : "was"} checked with text recognition, which found none of your terms. It can misread, so look over ${ocrd.length > 1 ? "them" : "it"} once.</p>`
+      : "");
+    const body = r.ok && (blind.length || ocrd.length)
+      ?`<p>${r.count} area${r.count === 1 ? "" : "s"} permanently removed. Metadata, bookmarks, links, comments, form fields and attachments were stripped.</p>${blindNote}`
       : r.ok
       ? `<p class="ok"><b>Verified.</b> ${r.count} area${r.count === 1 ? "" : "s"} permanently removed. The saved copy was re-opened and none of your search terms can be found in its text, its raw file data, metadata, bookmarks, links, comments, form fields or attachments.</p>`
       : `<p class="bad"><b>Check failed. Do not share this file yet.</b></p><ul>${r.findings.map((f) => `<li>${esc(f)}</li>`).join("")}</ul><p>Add a manual box over what remains, or a search term for it, and save again.</p>`;

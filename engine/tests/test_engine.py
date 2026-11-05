@@ -216,7 +216,8 @@ def test_shape_only_page_is_reported_unreadable(tmp_path):
     s = eng.Session()
     assert s.cmd_open(str(src))["unreadable_pages"] == [1]
     report = s.cmd_apply(str(tmp_path / "out.pdf"), [], ["anything"])
-    assert report["unreadable_pages"] == [1]  # the UI must not call this "verified"
+    # Never silently "verified": either OCR-checked or reported as unchecked.
+    assert (report["ocr_pages"] if eng.ocr_available() else report["unreadable_pages"]) == [1]
 
 
 def test_manual_box_snaps_to_half_covered_letter_shapes(tmp_path):
@@ -232,6 +233,51 @@ def test_manual_box_snaps_to_half_covered_letter_shapes(tmp_path):
     xs = sorted(round(r.x0) for r in small)
     assert 104 not in xs  # the half-covered letter was removed, not hidden
     assert 112 in xs and 72 in xs  # neighbours survive
+
+
+def test_ocr_find_tolerates_lookalike_letters_and_covers_whole_words():
+    R = pymupdf.Rect
+    lines = [[("To:", R(0, 0, 10, 5)), ("adbarclay92@gmaiI.com", R(12, 0, 60, 5)), ("today", R(62, 0, 80, 5))]]
+    hits = eng.ocr_find(lines, "gmail.com")
+    assert len(hits) == 1 and hits[0].x0 < 12 and hits[0].x1 > 60  # whole word, padded
+    assert len(eng.ocr_find(lines, "BARCLAY")) == 1
+    assert len(eng.ocr_find(lines, "to: adbarclay")) == 1  # spans two words
+    assert not eng.ocr_find(lines, "smith")
+
+
+def scanned_pdf(path: Path) -> None:
+    """A page that is only a picture of text, like a scan."""
+    text = pymupdf.open()
+    page = text.new_page()
+    page.insert_text((72, 100), f"Grantor: {SECRET}", fontsize=14)
+    page.insert_text((72, 140), "Recorded in the county records.", fontsize=14)
+    img = page.get_pixmap(dpi=200)
+    doc = pymupdf.open()
+    doc.new_page().insert_image(pymupdf.Rect(0, 0, 595, 842), pixmap=img)
+    doc.save(path)
+
+
+@pytest.mark.skipif(not eng.ocr_available(), reason="Windows OCR not available")
+def test_ocr_finds_and_removes_name_on_scanned_page(tmp_path):
+    src = tmp_path / "scan.pdf"
+    scanned_pdf(src)
+    out = tmp_path / "out.pdf"
+    hits, report = run_apply(src, out, ["Testperson"])
+    assert hits and all(h.get("ocr") for h in hits)
+    assert report["ok"], report["findings"]
+    assert report["ocr_pages"] == [1]
+    lines = eng.ocr_lines(pymupdf.open(out)[0])
+    words = " ".join(w for line in lines for w, _ in line).lower()
+    assert "testperson" not in words
+    assert "recorded" in words  # the rest survives
+
+
+@pytest.mark.skipif(not eng.ocr_available(), reason="Windows OCR not available")
+def test_verify_catches_name_left_on_scanned_page(tmp_path):
+    src = tmp_path / "scan.pdf"
+    scanned_pdf(src)
+    report = eng.verify(str(src), ["Testperson"], [])
+    assert not report["ok"]
 
 
 def test_protocol_round_trip(tricky, tmp_path):

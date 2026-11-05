@@ -64,18 +64,133 @@ def unreadable(page: pymupdf.Page) -> bool:
     return bool(page.get_images() or page.get_drawings())
 
 
-def search(doc: pymupdf.Document, terms: list[str]) -> list[dict]:
+# ---------------------------------------------------------------- OCR
+# Windows' built-in text recognition (Windows.Media.Ocr): no model to ship,
+# nothing leaves the machine. Used only on pages with no extractable text.
+
+OCR_ZOOM = 3.0  # ~216 dpi
+OCR_PAD = 1.0  # points added around each recognised word; OCR boxes run tight
+
+# OCR confuses these. Folding both the term and the recognised text the same
+# way means "gmaiI.com" still matches "gmail.com". Over-matching is safe here.
+_CONFUSABLE = str.maketrans({"0": "o", "1": "l", "i": "l", "|": "l", "!": "l"})
+
+
+class OcrUnavailable(RuntimeError):
+    pass
+
+
+def _fold(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip().casefold().translate(_CONFUSABLE)
+
+
+def ocr_available() -> bool:
+    try:
+        _ocr_engine()
+        return True
+    except OcrUnavailable:
+        return False
+
+
+_engine_cache = []
+
+
+def _ocr_engine():
+    if _engine_cache:
+        return _engine_cache[0]
+    try:
+        from winrt.windows.media.ocr import OcrEngine
+    except ImportError as e:
+        raise OcrUnavailable("Text recognition needs Windows.") from e
+    engine = OcrEngine.try_create_from_user_profile_languages()
+    if engine is None:
+        raise OcrUnavailable("Windows has no text-recognition language installed.")
+    _engine_cache.append(engine)
+    return engine
+
+
+def ocr_lines(page: pymupdf.Page) -> list[list[tuple[str, pymupdf.Rect]]]:
+    """Recognise a page. Returns lines of (word, rect in PDF points)."""
+    import asyncio
+
+    from winrt.windows.graphics.imaging import BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.storage.streams import DataWriter
+
+    engine = _ocr_engine()
+    zoom = min(OCR_ZOOM, (OcrEngine.max_image_dimension - 1) / max(page.rect.width, page.rect.height))
+    # Opaque white background first, then add an alpha channel: a transparent
+    # background reads as black and the black text disappears.
+    pix = pymupdf.Pixmap(page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False), 1)
+    bgra = bytearray(pix.samples)
+    bgra[0::4], bgra[2::4] = bgra[2::4], bgra[0::4]
+    writer = DataWriter()
+    writer.write_bytes(bgra)
+    bmp = SoftwareBitmap.create_copy_from_buffer(
+        writer.detach_buffer(), BitmapPixelFormat.BGRA8, pix.width, pix.height, BitmapAlphaMode.PREMULTIPLIED
+    )
+
+    async def run():
+        return await engine.recognize_async(bmp)
+
+    result = asyncio.run(run())
+    lines = []
+    for line in result.lines:
+        words = []
+        for w in line.words:
+            b = w.bounding_rect
+            words.append((w.text, pymupdf.Rect(b.x, b.y, b.x + b.width, b.y + b.height) / zoom))
+        lines.append(words)
+    return lines
+
+
+def ocr_find(lines: list[list[tuple[str, pymupdf.Rect]]], term: str) -> list[pymupdf.Rect]:
+    """Find a term in recognised lines; each hit covers the whole words it touches."""
+    t = _fold(term)
+    if not t:
+        return []
+    hits = []
+    for words in lines:
+        text, spans = "", []
+        for word, rect in words:
+            if text:
+                text += " "
+            start = len(text)
+            text += _fold(word)
+            spans.append((start, len(text), rect))
+        i = text.find(t)
+        while i != -1:
+            end = i + len(t)
+            rects = [r for a, b, r in spans if a < end and b > i]
+            box = pymupdf.Rect(rects[0])
+            for r in rects[1:]:
+                box |= r
+            hits.append(box + (-OCR_PAD, -OCR_PAD, OCR_PAD, OCR_PAD))
+            i = text.find(t, i + 1)
+    return hits
+
+
+# ---------------------------------------------------------------- search
+
+
+def search(doc: pymupdf.Document, terms: list[str], ocr: dict | None = None) -> list[dict]:
     """Find every instance of each term, widened to whole words.
 
     Widening means "Barclay" removes all of "adbarclay92@gmail.com" rather than
     leaving "ad…92@gmail.com" readable on either side of the box.
+    `ocr` maps page number -> ocr_lines() for pages without a text layer.
     """
+    ocr = ocr or {}
     hits = []
     for term in terms:
         t = re.sub(r"\s+", " ", term).strip()
         if not t:
             continue
         for page in doc:
+            if page.number in ocr:
+                for r in ocr_find(ocr[page.number], t):
+                    hits.append({"page": page.number, "rect": _rect(r), "term": t, "ocr": True})
+                continue
             words = None
             for r in page.search_for(t):
                 if words is None:
@@ -226,14 +341,27 @@ def verify(out_path: str, terms: list[str], regions: list[dict]) -> dict:
         if page.first_annot is not None or page.first_widget is not None:
             findings.append(f"Annotations or form fields remain on page {page.number + 1}.")
 
-    # 5. Pages this check cannot read. Passing on these would be meaningless.
-    blind = [page.number + 1 for page in doc if unreadable(page)]
+    # 5. Pages without a text layer: read them with OCR, or report that they could not be checked.
+    blind, ocr_checked = [], []
+    can_ocr = ocr_available()
+    for page in doc:
+        if not unreadable(page):
+            continue
+        if not can_ocr:
+            blind.append(page.number + 1)
+            continue
+        ocr_checked.append(page.number + 1)
+        lines = ocr_lines(page)
+        for t in terms:
+            if ocr_find(lines, t):
+                findings.append(f'"{t}" can still be read (by text recognition) on page {page.number + 1}.')
 
     doc.close()
     return {
         "ok": not findings,
         "findings": sorted(set(findings), key=findings.index),
-        "unreadable_pages": blind,
+        "unreadable_pages": blind,  # not checked at all
+        "ocr_pages": ocr_checked,  # checked by OCR, which can misread
     }
 
 
@@ -244,6 +372,16 @@ class Session:
     def __init__(self) -> None:
         self.doc: pymupdf.Document | None = None
         self.path: str | None = None
+        self.ocr: dict[int, list] | None = None  # page -> ocr_lines(), filled on first search
+
+    def _ocr_pages(self) -> dict[int, list]:
+        if self.ocr is None:
+            self.ocr = {}
+            if ocr_available():
+                for page in self._need():
+                    if unreadable(page):
+                        self.ocr[page.number] = ocr_lines(page)
+        return self.ocr
 
     def _need(self) -> pymupdf.Document:
         if self.doc is None:
@@ -254,11 +392,12 @@ class Session:
         doc = load(path)
         if self.doc is not None:
             self.doc.close()
-        self.doc, self.path = doc, path
+        self.doc, self.path, self.ocr = doc, path, None
         return {
             "path": path,
             "pages": [{"width": p.rect.width, "height": p.rect.height} for p in doc],
             "unreadable_pages": [p.number + 1 for p in doc if unreadable(p)],
+            "ocr_available": ocr_available(),
         }
 
     def cmd_render(self, page: int, zoom: float = RENDER_ZOOM) -> dict:
@@ -266,7 +405,7 @@ class Session:
         return {"png": base64.b64encode(pix.tobytes("png")).decode("ascii")}
 
     def cmd_search(self, terms: list[str]) -> dict:
-        return {"hits": search(self._need(), terms)}
+        return {"hits": search(self._need(), terms, self._ocr_pages())}
 
     def cmd_apply(self, out_path: str, redactions: list[dict], terms: list[str]) -> dict:
         self._need()
