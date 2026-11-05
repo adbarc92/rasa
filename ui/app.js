@@ -158,20 +158,23 @@ $("open-folder").onclick = async () => {
 // (used when new files are opened with an existing term set).
 async function addTerms(texts, force = false) {
   busy(true, "Searching…");
+  const added = []; // newest go to the top of the list, keeping their own order
   try {
     for (const text of texts) {
-      const known = state.terms.some((t) => t.toLowerCase() === text.toLowerCase());
+      const same = (t) => t.toLowerCase() === text.toLowerCase();
+      const known = state.terms.some(same) || added.some(same);
       if (known && !force) continue;
       for (const f of state.files) {
         if (f.error) continue;
         const { hits } = await engine("search", { terms: [text], path: f.path });
         for (const h of hits) f.hits.set(nextId++, { ...h, enabled: true });
       }
-      if (!known) state.terms.push(text);
+      if (!known) added.push(text);
     }
   } catch (e) {
     fail(e);
   } finally {
+    state.terms = [...added, ...state.terms];
     busy(false);
   }
 }
