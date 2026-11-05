@@ -4,6 +4,13 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "pymupdf>=1.26.5,<2",
+    "winrt-runtime>=3 ; sys_platform == 'win32'",
+    "winrt-windows-foundation>=3 ; sys_platform == 'win32'",
+    "winrt-windows-foundation-collections>=3 ; sys_platform == 'win32'",
+    "winrt-windows-globalization>=3 ; sys_platform == 'win32'",
+    "winrt-windows-graphics-imaging>=3 ; sys_platform == 'win32'",
+    "winrt-windows-media-ocr>=3 ; sys_platform == 'win32'",
+    "winrt-windows-storage-streams>=3 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

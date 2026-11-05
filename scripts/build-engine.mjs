@@ -11,7 +11,7 @@ const ext = process.platform === "win32" ? ".exe" : "";
 
 execSync(
   "uv run --group build pyinstaller --onefile --console --clean --noconfirm --name rasa-engine " +
-    "--exclude-module tkinter --exclude-module pymupdf4llm --exclude-module pymupdf.layout rasa_engine.py",
+    "--collect-submodules winrt --exclude-module tkinter --exclude-module pymupdf4llm --exclude-module pymupdf.layout rasa_engine.py",
   { cwd: engine, stdio: "inherit" },
 );
 

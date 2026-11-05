@@ -9,7 +9,8 @@
   <body>
     <header>
       <div class="brand">rasa <span>permanent redaction, on this machine only</span></div>
-      <button id="open">Open PDF…</button>
+      <button id="open" data-always="1">Open PDF…</button>
+      <button id="open-folder" data-always="1">Open folder…</button>
       <div id="filename" class="filename"></div>
       <div class="spacer"></div>
       <span id="pending" class="pending"></span>
@@ -18,15 +19,25 @@
 
     <main>
       <aside>
+        <section id="files-section" hidden>
+          <h2>Files</h2>
+          <p class="hint">Search terms apply to every file. Click a file to review it and add boxes.</p>
+          <ul id="files"></ul>
+        </section>
         <section>
           <h2>Find and redact</h2>
           <form id="term-form">
             <input id="term" placeholder="Name, number, email…" autocomplete="off" disabled />
-            <button id="add-term" disabled>Add</button>
+            <button id="add-term" data-always="1">Add</button>
           </form>
           <p id="blind" class="warn" hidden></p>
           <p class="hint">Matches every instance, ignoring case, and covers the whole word it appears in ("Smith" removes all of "jsmith@mail.com"). Names vary, so add each form: "Alex Barclay" won't find "Alexander Barclay", but "Barclay" finds both.</p>
           <ul id="terms"></ul>
+          <div class="set-actions">
+            <button id="load-set" data-always="1" title="Add terms from a saved set">Load set…</button>
+            <button id="save-set" data-always="1" title="Save these terms to reuse on other documents">Save set…</button>
+          </div>
+          <p class="hint">Terms stay in place when you open another file or folder.</p>
         </section>
         <section>
           <h2>Manual boxes</h2>
