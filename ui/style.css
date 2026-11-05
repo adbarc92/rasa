@@ -84,6 +84,8 @@ input {
 .summary .ok { color: var(--ok); }
 .summary .check { color: #a86b00; }
 .summary .bad { color: var(--accent); }
+.set-actions { display: flex; gap: 6px; margin-top: 8px; }
+.set-actions button { flex: 1; font-size: 12.5px; padding: 4px 8px; }
 .legend { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin: 4px 0; }
 .sw { display: inline-block; width: 18px; height: 12px; border-radius: 2px; }
 .sw.hit { background: var(--hit); outline: 1.5px solid var(--accent); }

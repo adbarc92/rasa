@@ -309,6 +309,14 @@ def test_folder_mode_lists_searches_and_saves_each_file(tmp_path):
         s.cmd_search([SECRET])
 
 
+def test_term_set_round_trip(tmp_path):
+    s = eng.Session()
+    p = tmp_path / "family.txt"
+    s.cmd_save_terms(str(p), [SECRET, "  4417-1234 ", ""])
+    p.write_text(p.read_text(encoding="utf-8") + "# a comment\n\nBarclay\n", encoding="utf-8")
+    assert s.cmd_load_terms(str(p))["terms"] == [SECRET, "4417-1234", "Barclay"]
+
+
 def test_protocol_round_trip(tricky, tmp_path):
     script = Path(__file__).resolve().parents[1] / "rasa_engine.py"
     out = tmp_path / "out.pdf"

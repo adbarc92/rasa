@@ -414,6 +414,17 @@ class Session:
                     found.append(os.path.join(dirpath, name))
         return {"paths": found}
 
+    def cmd_save_terms(self, path: str, terms: list[str]) -> dict:
+        """A term set is plain text, one term per line, so it can be edited by hand."""
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("".join(t.strip() + "\n" for t in terms if t.strip()))
+        return {"path": path}
+
+    def cmd_load_terms(self, path: str) -> dict:
+        with open(path, encoding="utf-8-sig") as f:
+            terms = [re.sub(r"\s+", " ", line).strip() for line in f]
+        return {"terms": [t for t in terms if t and not t.startswith("#")]}
+
     def cmd_out_path(self, path: str, folder: str, out_dir: str) -> dict:
         """Where a folder file's redacted copy goes: same subfolders, name + suffix."""
         rel = os.path.relpath(path, folder)

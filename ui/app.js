@@ -65,7 +65,7 @@ async function openFiles(paths, folder) {
   busy(true, "Opening…");
   try {
     await engine("close_all");
-    Object.assign(state, { folder, files: [], cur: -1, terms: [] });
+    Object.assign(state, { folder, files: [], cur: -1 }); // terms carry over to the new files
     for (const [i, path] of paths.entries()) {
       $("pending").textContent = `Opening ${i + 1} of ${paths.length}…`;
       const name = folder ? path.slice(folder.length).replace(/^[\\/]+/, "") : path.split(/[\\/]/).pop();
@@ -86,6 +86,7 @@ async function openFiles(paths, folder) {
       showModal("No PDFs found", `<p>There are no PDF files in ${esc(folder)}.</p>`);
       return;
     }
+    if (state.terms.length) await addTerms(state.terms, true);
     await select(0);
     const blind = state.files.filter((f) => f.unreadable.length);
     if (blind.length) {
@@ -153,26 +154,55 @@ $("open-folder").onclick = async () => {
 
 // ------------------------------------------------------------- search terms
 
-$("term-form").onsubmit = async (ev) => {
-  ev.preventDefault();
-  const inputs = $("term").value.split(/\n/).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
-  $("term").value = "";
+// Search every open file for each new term. `force` re-searches terms already listed
+// (used when new files are opened with an existing term set).
+async function addTerms(texts, force = false) {
   busy(true, "Searching…");
   try {
-    for (const text of inputs) {
-      if (state.terms.some((t) => t.toLowerCase() === text.toLowerCase())) continue;
+    for (const text of texts) {
+      const known = state.terms.some((t) => t.toLowerCase() === text.toLowerCase());
+      if (known && !force) continue;
       for (const f of state.files) {
         if (f.error) continue;
         const { hits } = await engine("search", { terms: [text], path: f.path });
         for (const h of hits) f.hits.set(nextId++, { ...h, enabled: true });
       }
-      state.terms.push(text);
+      if (!known) state.terms.push(text);
     }
   } catch (e) {
     fail(e);
   } finally {
     busy(false);
-    $("term").focus();
+  }
+}
+
+$("term-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const inputs = $("term").value.split(/\n/).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+  $("term").value = "";
+  await addTerms(inputs);
+  $("term").focus();
+};
+
+$("save-set").onclick = async () => {
+  const path = await dialog.save({ defaultPath: "redaction-terms.txt", filters: [{ name: "Term set", extensions: ["txt"] }] });
+  if (!path) return;
+  try {
+    await engine("save_terms", { path, terms: state.terms });
+    showModal("Term set saved", `<p>${plural(state.terms.length, "term")} saved to ${esc(path)}.</p><p class="muted">It is a plain text file with one term per line. It contains the names you are redacting, so keep it somewhere private.</p>`);
+  } catch (e) {
+    fail(e);
+  }
+};
+
+$("load-set").onclick = async () => {
+  const path = await dialog.open({ multiple: false, filters: [{ name: "Term set", extensions: ["txt"] }] });
+  if (!path) return;
+  try {
+    const { terms } = await engine("load_terms", { path });
+    await addTerms(terms);
+  } catch (e) {
+    fail(e);
   }
 };
 
@@ -275,9 +305,8 @@ function refresh() {
     let total = 0, live = 0;
     for (const x of state.files) for (const h of x.hits.values()) if (h.term === text) { total++; if (h.enabled) live++; }
     const li = document.createElement("li");
-    li.innerHTML = `<span class="t">${esc(text)}</span><span class="n ${total ? "" : "zero"}">${
-      total ? (live === total ? live : `${live}/${total}`) : "not found"
-    }</span><button title="Remove">✕</button>`;
+    const count = !ready.length ? "" : total ? (live === total ? live : `${live}/${total}`) : "not found";
+    li.innerHTML = `<span class="t">${esc(text)}</span><span class="n ${total || !ready.length ? "" : "zero"}">${count}</span><button title="Remove">✕</button>`;
     li.querySelector("button").onclick = () => removeTerm(text);
     list.appendChild(li);
   }
@@ -291,8 +320,9 @@ function refresh() {
     const n = ready.reduce((s, x) => s + pendingRedactions(x).length, 0);
     $("pending").textContent = state.files.length ? `${plural(n, "redaction")} ready${state.files.length > 1 ? ` across ${plural(ready.length, "file")}` : ""}` : "";
     $("save").disabled = !ready.length;
-    $("add-term").disabled = !ready.length;
   }
+  $("save-set").disabled = !state.terms.length || document.body.classList.contains("busy");
+  $("term").disabled = false;
   $("save").textContent = state.files.length > 1 ? "Save all redacted copies…" : "Save redacted copy…";
 
   // Page overlays
