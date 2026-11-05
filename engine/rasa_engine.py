@@ -368,31 +368,64 @@ def verify(out_path: str, terms: list[str], regions: list[dict]) -> dict:
 # ---------------------------------------------------------------- protocol
 
 
+REDACTED_SUFFIX = "-redacted"
+
+
 class Session:
+    """Open documents, keyed by path. Commands act on `path`, or the last one opened."""
+
     def __init__(self) -> None:
-        self.doc: pymupdf.Document | None = None
+        self.docs: dict[str, dict] = {}  # path -> {"doc": Document, "ocr": {page: lines} | None}
         self.path: str | None = None
-        self.ocr: dict[int, list] | None = None  # page -> ocr_lines(), filled on first search
 
-    def _ocr_pages(self) -> dict[int, list]:
-        if self.ocr is None:
-            self.ocr = {}
-            if ocr_available():
-                for page in self._need():
-                    if unreadable(page):
-                        self.ocr[page.number] = ocr_lines(page)
-        return self.ocr
-
-    def _need(self) -> pymupdf.Document:
-        if self.doc is None:
+    def _entry(self, path: str | None = None) -> dict:
+        path = path or self.path
+        if path is None or path not in self.docs:
             raise ValueError("No PDF is open.")
-        return self.doc
+        return self.docs[path]
+
+    def _need(self, path: str | None = None) -> pymupdf.Document:
+        return self._entry(path)["doc"]
+
+    def _ocr_pages(self, path: str | None = None) -> dict[int, list]:
+        entry = self._entry(path)
+        if entry["ocr"] is None:  # recognised once, on first search
+            entry["ocr"] = {}
+            if ocr_available():
+                for page in entry["doc"]:
+                    if unreadable(page):
+                        entry["ocr"][page.number] = ocr_lines(page)
+        return entry["ocr"]
+
+    def cmd_close_all(self) -> dict:
+        for entry in self.docs.values():
+            entry["doc"].close()
+        self.docs, self.path = {}, None
+        return {}
+
+    def cmd_list_pdfs(self, folder: str) -> dict:
+        """Every PDF under a folder, skipping copies rasa already made."""
+        found = []
+        for dirpath, dirnames, filenames in os.walk(folder):
+            dirnames.sort()
+            for name in sorted(filenames):
+                stem, ext = os.path.splitext(name)
+                if ext.lower() == ".pdf" and not stem.endswith(REDACTED_SUFFIX):
+                    found.append(os.path.join(dirpath, name))
+        return {"paths": found}
+
+    def cmd_out_path(self, path: str, folder: str, out_dir: str) -> dict:
+        """Where a folder file's redacted copy goes: same subfolders, name + suffix."""
+        rel = os.path.relpath(path, folder)
+        stem, ext = os.path.splitext(rel)
+        return {"out_path": os.path.join(out_dir, stem + REDACTED_SUFFIX + ext)}
 
     def cmd_open(self, path: str) -> dict:
         doc = load(path)
-        if self.doc is not None:
-            self.doc.close()
-        self.doc, self.path, self.ocr = doc, path, None
+        if path in self.docs:
+            self.docs[path]["doc"].close()
+        self.docs[path] = {"doc": doc, "ocr": None}
+        self.path = path
         return {
             "path": path,
             "pages": [{"width": p.rect.width, "height": p.rect.height} for p in doc],
@@ -400,18 +433,20 @@ class Session:
             "ocr_available": ocr_available(),
         }
 
-    def cmd_render(self, page: int, zoom: float = RENDER_ZOOM) -> dict:
-        pix = self._need()[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+    def cmd_render(self, page: int, zoom: float = RENDER_ZOOM, path: str | None = None) -> dict:
+        pix = self._need(path)[page].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
         return {"png": base64.b64encode(pix.tobytes("png")).decode("ascii")}
 
-    def cmd_search(self, terms: list[str]) -> dict:
-        return {"hits": search(self._need(), terms, self._ocr_pages())}
+    def cmd_search(self, terms: list[str], path: str | None = None) -> dict:
+        return {"hits": search(self._need(path), terms, self._ocr_pages(path))}
 
-    def cmd_apply(self, out_path: str, redactions: list[dict], terms: list[str]) -> dict:
-        self._need()
-        if os.path.abspath(out_path).casefold() == os.path.abspath(self.path).casefold():
+    def cmd_apply(self, out_path: str, redactions: list[dict], terms: list[str], path: str | None = None) -> dict:
+        src = path or self.path
+        self._need(src)
+        if os.path.abspath(out_path).casefold() == os.path.abspath(src).casefold():
             raise ValueError("Save the redacted copy under a new name; the original is kept.")
-        doc = load(self.path)  # fresh copy, so the open session is never half-redacted
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        doc = load(src)  # fresh copy, so the open session is never half-redacted
         try:
             redact(doc, redactions)
             save(doc, out_path)

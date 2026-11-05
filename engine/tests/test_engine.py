@@ -280,6 +280,35 @@ def test_verify_catches_name_left_on_scanned_page(tmp_path):
     assert not report["ok"]
 
 
+def test_folder_mode_lists_searches_and_saves_each_file(tmp_path):
+    folder = tmp_path / "estate"
+    (folder / "emails").mkdir(parents=True)
+    make_tricky_pdf(folder / "will.pdf")
+    clean = pymupdf.open()
+    clean.new_page().insert_text((72, 100), "Nothing to hide here.")
+    clean.set_metadata({"author": SECRET})  # name only in metadata
+    clean.save(folder / "emails" / "note.pdf")
+    (folder / "old-redacted.pdf").write_bytes((folder / "will.pdf").read_bytes())  # earlier output: skipped
+
+    s = eng.Session()
+    paths = s.cmd_list_pdfs(str(folder))["paths"]
+    assert [Path(p).name for p in paths] == ["will.pdf", "note.pdf"]
+    out_dir = tmp_path / "out"
+    for p in paths:
+        s.cmd_open(p)
+    for p in paths:
+        hits = s.cmd_search([SECRET], path=p)["hits"]
+        out = s.cmd_out_path(p, str(folder), str(out_dir))["out_path"]
+        report = s.cmd_apply(out, hits, [SECRET], path=p)
+        assert report["ok"], (p, report["findings"])
+    assert (out_dir / "will-redacted.pdf").exists()
+    note = pymupdf.open(out_dir / "emails" / "note-redacted.pdf")
+    assert not note.metadata["author"]  # a file with no matches still gets scrubbed
+    s.cmd_close_all()
+    with pytest.raises(ValueError):
+        s.cmd_search([SECRET])
+
+
 def test_protocol_round_trip(tricky, tmp_path):
     script = Path(__file__).resolve().parents[1] / "rasa_engine.py"
     out = tmp_path / "out.pdf"

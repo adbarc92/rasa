@@ -9,7 +9,8 @@
   <body>
     <header>
       <div class="brand">rasa <span>permanent redaction, on this machine only</span></div>
-      <button id="open">Open PDF…</button>
+      <button id="open" data-always="1">Open PDF…</button>
+      <button id="open-folder" data-always="1">Open folder…</button>
       <div id="filename" class="filename"></div>
       <div class="spacer"></div>
       <span id="pending" class="pending"></span>
@@ -18,6 +19,11 @@
 
     <main>
       <aside>
+        <section id="files-section" hidden>
+          <h2>Files</h2>
+          <p class="hint">Search terms apply to every file. Click a file to review it and add boxes.</p>
+          <ul id="files"></ul>
+        </section>
         <section>
           <h2>Find and redact</h2>
           <form id="term-form">
