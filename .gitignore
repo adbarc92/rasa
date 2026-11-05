@@ -1,0 +1,13 @@
+# Never commit documents. Tests generate their own PDFs.
+*.pdf
+
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+engine/.venv/
+engine/build/
+engine/dist/
+engine/*.spec
+__pycache__/
+.pytest_cache/
