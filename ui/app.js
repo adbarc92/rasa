@@ -37,6 +37,12 @@ function showModal(title, html, actions = [{ label: "Close" }]) {
   $("modal").hidden = false;
 }
 
+function blindText(pages, total) {
+  const which = pages.length === total ? "This file has"
+    : pages.length === 1 ? `Page ${pages[0]} has` : `Pages ${pages.join(", ")} have`;
+  return `${which} no searchable text. Search will find nothing there, so cover names with manual boxes.`;
+}
+
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const fail = (e) => showModal("Something went wrong", `<p class="bad">${esc(e)}</p>`);
 
@@ -60,6 +66,10 @@ async function openPdf(path) {
       host.appendChild(el);
       wireDrawing(el.querySelector(".overlay"), i);
     });
+    state.unreadable = info.unreadable_pages || [];
+    $("blind").hidden = !state.unreadable.length;
+    $("blind").textContent = blindText(state.unreadable, info.pages.length);
+    if (state.unreadable.length) showModal("Search can't see this file", `<p class="bad">${esc(blindText(state.unreadable, info.pages.length))}</p><p>This happens with "Microsoft Print to PDF" and with scans: letters are stored as shapes or pictures, not text. Manual boxes still delete them permanently.</p><p>For emails, print again and choose <b>Save as PDF</b> (Chrome or Edge) instead of Microsoft Print to PDF. That keeps the text, and search will work.</p>`);
     refresh();
     for (let i = 0; i < info.pages.length; i++) {
       const { png } = await engine("render", { page: i });
@@ -228,13 +238,19 @@ $("save").onclick = async () => {
     const terms = state.terms.map((t) => t.text);
     const r = await engine("apply", { out_path: out, redactions, terms });
     const missed = state.terms.filter((t) => !t.hitIds.length).map((t) => t.text);
-    const body = r.ok
+    const blind = r.unreadable_pages || [];
+    const blindNote = blind.length
+      ? `<p class="bad"><b>Not fully checked.</b> ${esc(blindText(blind, state.pages.length))} rasa cannot read those pages, so it cannot confirm your terms are gone from them. Check them by eye.</p>`
+      : "";
+    const body = r.ok && blind.length
+      ? `<p>${r.count} area${r.count === 1 ? "" : "s"} permanently removed. Metadata, bookmarks, links, comments, form fields and attachments were stripped.</p>${blindNote}`
+      : r.ok
       ? `<p class="ok"><b>Verified.</b> ${r.count} area${r.count === 1 ? "" : "s"} permanently removed. The saved copy was re-opened and none of your search terms can be found in its text, its raw file data, metadata, bookmarks, links, comments, form fields or attachments.</p>`
       : `<p class="bad"><b>Check failed. Do not share this file yet.</b></p><ul>${r.findings.map((f) => `<li>${esc(f)}</li>`).join("")}</ul><p>Add a manual box over what remains, or a search term for it, and save again.</p>`;
     const warn = missed.length
       ? `<p class="bad">These terms were never found, so nothing was removed for them: ${missed.map(esc).join(", ")}.</p>`
       : "";
-    showModal(r.ok ? "Redacted copy saved" : "Saved, but something remains",
+    showModal(!r.ok ? "Saved, but something remains" : blind.length ? "Saved, check it by eye" : "Redacted copy saved",
       `${body}${warn}<p class="muted">${esc(r.out_path)}</p><p class="muted">Black boxes still show how long the removed text was. Read the copy once before sending it.</p>`,
       [{ label: "Keep editing original" }, { label: "View redacted copy", primary: true, run: () => openPdf(r.out_path) }]);
   } catch (e) {

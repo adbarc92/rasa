@@ -24,7 +24,8 @@
             <input id="term" placeholder="Name, number, email…" autocomplete="off" disabled />
             <button id="add-term" disabled>Add</button>
           </form>
-          <p class="hint">Matches every instance in the document, ignoring case. Add each variant you need ("J. Smith", "Smith", "jsmith@").</p>
+          <p id="blind" class="warn" hidden></p>
+          <p class="hint">Matches every instance, ignoring case, and covers the whole word it appears in ("Smith" removes all of "jsmith@mail.com"). Names vary, so add each form: "Alex Barclay" won't find "Alexander Barclay", but "Barclay" finds both.</p>
           <ul id="terms"></ul>
         </section>
         <section>

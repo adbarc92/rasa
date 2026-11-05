@@ -188,6 +188,52 @@ def test_rotated_page_coordinates_line_up(tmp_path):
     assert "Grantor" in pymupdf.open(out)[0].get_text()
 
 
+def test_partial_match_removes_whole_word(tmp_path):
+    src = tmp_path / "email.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 100), "To: adbarclay92@gmail.com today", fontsize=11)
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    _, report = run_apply(src, out, ["Barclay"])
+    assert report["ok"], report["findings"]
+    text = pymupdf.open(out)[0].get_text()
+    assert "adbarclay" not in text and "gmail" not in text and "92" not in text
+    assert "To:" in text and "today" in text
+
+
+def shapes_only_pdf(path: Path) -> None:
+    """Like "Microsoft Print to PDF": letters are small filled shapes, no text at all."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for i in range(10):
+        page.draw_rect(pymupdf.Rect(72 + i * 8, 100, 78 + i * 8, 108), color=None, fill=(0, 0, 0))
+    doc.save(path)
+
+
+def test_shape_only_page_is_reported_unreadable(tmp_path):
+    src = tmp_path / "printed.pdf"
+    shapes_only_pdf(src)
+    s = eng.Session()
+    assert s.cmd_open(str(src))["unreadable_pages"] == [1]
+    report = s.cmd_apply(str(tmp_path / "out.pdf"), [], ["anything"])
+    assert report["unreadable_pages"] == [1]  # the UI must not call this "verified"
+
+
+def test_manual_box_snaps_to_half_covered_letter_shapes(tmp_path):
+    src = tmp_path / "printed.pdf"
+    shapes_only_pdf(src)
+    out = tmp_path / "out.pdf"
+    # Box covers letters 2-4 fully and more than half of letter 5 (x 104-110), not letter 6 (x 112).
+    s = eng.Session()
+    s.cmd_open(str(src))
+    s.cmd_apply(str(out), [{"page": 0, "rect": [86, 98, 108, 110]}], [])
+    left = [d["rect"] for d in pymupdf.open(out)[0].get_drawings() if d.get("fill") == (0.0, 0.0, 0.0)]
+    small = [r for r in left if r.width < 10]  # letter shapes, not the black redaction fill
+    xs = sorted(round(r.x0) for r in small)
+    assert 104 not in xs  # the half-covered letter was removed, not hidden
+    assert 112 in xs and 72 in xs  # neighbours survive
+
+
 def test_protocol_round_trip(tricky, tmp_path):
     script = Path(__file__).resolve().parents[1] / "rasa_engine.py"
     out = tmp_path / "out.pdf"

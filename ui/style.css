@@ -52,6 +52,7 @@ aside {
 }
 aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 16px 0 8px; }
 .hint, .muted { color: var(--muted); font-size: 12.5px; margin: 6px 0; }
+.warn { background: #fdecc8; color: #5c3b00; border-radius: 6px; padding: 8px 10px; font-size: 12.5px; }
 form { display: flex; gap: 6px; }
 input {
   flex: 1; min-width: 0; font: inherit; padding: 6px 8px; border-radius: 6px;

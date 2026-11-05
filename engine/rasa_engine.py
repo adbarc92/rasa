@@ -53,16 +53,57 @@ def load(path: str) -> pymupdf.Document:
     return doc
 
 
+def unreadable(page: pymupdf.Page) -> bool:
+    """True when a page shows content but has no extractable text.
+
+    "Microsoft Print to PDF" and scanners produce these: every letter is a
+    drawn shape or pixels, so search cannot see it and neither can verify().
+    """
+    if page.get_text("text").strip():
+        return False
+    return bool(page.get_images() or page.get_drawings())
+
+
 def search(doc: pymupdf.Document, terms: list[str]) -> list[dict]:
+    """Find every instance of each term, widened to whole words.
+
+    Widening means "Barclay" removes all of "adbarclay92@gmail.com" rather than
+    leaving "ad…92@gmail.com" readable on either side of the box.
+    """
     hits = []
     for term in terms:
         t = re.sub(r"\s+", " ", term).strip()
         if not t:
             continue
         for page in doc:
+            words = None
             for r in page.search_for(t):
-                hits.append({"page": page.number, "rect": _rect(r), "term": t})
+                if words is None:
+                    words = [pymupdf.Rect(w[:4]) for w in page.get_text("words")]
+                grown = pymupdf.Rect(r)
+                for wr in words:
+                    inter = wr & r
+                    if not inter.is_empty and inter.get_area() > 0.2 * min(wr.get_area(), r.get_area()):
+                        grown |= wr
+                hits.append({"page": page.number, "rect": _rect(grown), "term": t})
     return hits
+
+
+def _snap(rect: pymupdf.Rect, drawings: list[dict]) -> pymupdf.Rect:
+    """Grow a box to fully cover any letter-sized shape whose centre it covers.
+
+    MuPDF only deletes vector shapes that lie entirely inside a box. In files
+    where letters are shapes, a box drawn slightly short would leave a
+    half-covered letter in the file, recoverable by removing the black fill.
+    """
+    grown = pymupdf.Rect(rect)
+    for dr in drawings:
+        b = dr["rect"]
+        if b.width <= 40 and b.height <= 40:
+            centre = pymupdf.Point((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2)
+            if centre in rect:
+                grown |= b
+    return grown
 
 
 def redact(doc: pymupdf.Document, redactions: list[dict]) -> None:
@@ -72,8 +113,9 @@ def redact(doc: pymupdf.Document, redactions: list[dict]) -> None:
         by_page.setdefault(int(r["page"]), []).append(pymupdf.Rect(r["rect"]))
     for pno, rects in by_page.items():
         page = doc[pno]
+        drawings = page.get_drawings()
         for rect in rects:
-            page.add_redact_annot(rect, fill=(0, 0, 0))
+            page.add_redact_annot(_snap(rect, drawings), fill=(0, 0, 0))
     for page in doc:
         page.apply_redactions(
             images=pymupdf.PDF_REDACT_IMAGE_PIXELS,  # blank the covered pixels, not just cover them
@@ -184,8 +226,15 @@ def verify(out_path: str, terms: list[str], regions: list[dict]) -> dict:
         if page.first_annot is not None or page.first_widget is not None:
             findings.append(f"Annotations or form fields remain on page {page.number + 1}.")
 
+    # 5. Pages this check cannot read. Passing on these would be meaningless.
+    blind = [page.number + 1 for page in doc if unreadable(page)]
+
     doc.close()
-    return {"ok": not findings, "findings": sorted(set(findings), key=findings.index)}
+    return {
+        "ok": not findings,
+        "findings": sorted(set(findings), key=findings.index),
+        "unreadable_pages": blind,
+    }
 
 
 # ---------------------------------------------------------------- protocol
@@ -209,6 +258,7 @@ class Session:
         return {
             "path": path,
             "pages": [{"width": p.rect.width, "height": p.rect.height} for p in doc],
+            "unreadable_pages": [p.number + 1 for p in doc if unreadable(p)],
         }
 
     def cmd_render(self, page: int, zoom: float = RENDER_ZOOM) -> dict:
