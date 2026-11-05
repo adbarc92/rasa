@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rasa</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">rasa <span>permanent redaction, on this machine only</span></div>
+      <button id="open">Open PDF…</button>
+      <div id="filename" class="filename"></div>
+      <div class="spacer"></div>
+      <span id="pending" class="pending"></span>
+      <button id="save" class="primary" disabled>Save redacted copy…</button>
+    </header>
+
+    <main>
+      <aside>
+        <section>
+          <h2>Find and redact</h2>
+          <form id="term-form">
+            <input id="term" placeholder="Name, number, email…" autocomplete="off" disabled />
+            <button id="add-term" disabled>Add</button>
+          </form>
+          <p id="blind" class="warn" hidden></p>
+          <p class="hint">Matches every instance, ignoring case, and covers the whole word it appears in ("Smith" removes all of "jsmith@mail.com"). Names vary, so add each form: "Alex Barclay" won't find "Alexander Barclay", but "Barclay" finds both.</p>
+          <ul id="terms"></ul>
+        </section>
+        <section>
+          <h2>Manual boxes</h2>
+          <p class="hint">Drag on a page to cover anything search missed, such as signatures, pictures or logos. Click a box to remove it. Ctrl+Z undoes the last box.</p>
+          <div id="manual-count" class="muted">None yet</div>
+        </section>
+        <section>
+          <h2>Key</h2>
+          <div class="legend"><i class="sw hit"></i> found by search, will be removed</div>
+          <div class="legend"><i class="sw skip"></i> skipped (click a match to toggle)</div>
+          <div class="legend"><i class="sw manual"></i> your box, will be removed</div>
+        </section>
+      </aside>
+
+      <div id="pages">
+        <div class="empty">
+          <h1>Open a PDF to begin</h1>
+          <p>The original file is never changed. rasa writes a new copy with the redacted content deleted, not just covered, then re-reads that copy to check nothing is left.</p>
+        </div>
+      </div>
+    </main>
+
+    <div id="modal" class="modal" hidden>
+      <div class="card">
+        <h2 id="modal-title"></h2>
+        <div id="modal-body"></div>
+        <div class="actions" id="modal-actions"></div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
