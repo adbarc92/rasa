@@ -7,6 +7,11 @@ Type a name or number and every instance in the document is removed. Drag boxes
 over anything else (signatures, pictures, logos). The original is never modified;
 rasa writes a new copy and then checks that copy for leftovers.
 
+Open one PDF or a whole folder (subfolders included). Search terms apply to every
+file, and **Save all** writes `name-redacted.pdf` copies to a folder you choose with
+a pass/fail summary per file. Term lists can be saved and loaded as plain text files
+(one term per line) to reuse across documents.
+
 ## What "permanent" means here
 
 Drawing a black rectangle over text does nothing: the words are still in the file
@@ -33,8 +38,10 @@ empty. If anything is found, it tells you not to share the file.
 - **Box size reveals text length.** The rest of the line stays where it was, so the
   width of a black box shows roughly how long the removed text was. With context,
   a short name can sometimes be guessed. Redact surrounding words too if that matters.
-- **Search only sees real text.** Scanned pages and text inside pictures are not
-  searchable. Cover them with manual boxes.
+- **Pages without a text layer** ("Microsoft Print to PDF", scans) are read with
+  Windows' built-in text recognition. It can misread, so those pages are marked for
+  review. Text inside pictures on otherwise normal pages is not searched: cover it
+  with manual boxes.
 - **Search matches what you type.** "Smith" will not find "S M I T H" or "Smyth".
   Add every variant you need.
 - **Password-protected PDFs** must be unlocked first.
